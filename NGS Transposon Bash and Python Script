@@ -1,0 +1,501 @@
+          ###LSM3241 CA2 Project: Finding transposon inserts in yeast genome###
+
+
+
+#Changing directory to Desktop and making necessary folders###
+cd ~/../mnt/c/users/'Wei Yuan'/Desktop
+mkdir CA2 CA2/data CA2/src CA2/results
+
+
+
+          ###Downloading and installing packages###
+
+
+
+#If error message 'Unable to locate package' appears when installing packages,
+#type in the following codes
+sudo add-apt-repository main
+sudo add-apt-repository universe
+sudo add-apt-repository restricted
+sudo add-apt-repository multiverse
+sudo apt-get update
+
+#Installing packages
+sudo apt-get install curl
+sudo apt-get install fastqc
+sudo apt-get install trimmomatic
+sudo apt-get install picard-tools
+sudo apt-get install bowtie bowtie2
+sudo apt-get install samtools
+
+sudo apt-get install libbz2-dev
+sudo apt-get install zlib1g-dev
+sudo apt-get install libncurses5-dev
+sudo apt-get install libncursesw5-dev
+sudo apt-get install liblzma-dev
+wget https://github.com/samtools/samtools/releases/download/1.9/samtools-1.9.tar.bz2
+tar -vxjf samtools-1.9.tar.bz2
+cd samtools-1.9
+make
+sudo make install
+
+sudo apt-get install bcftools
+sudo apt-get install bedtools
+
+
+
+          ###Assessing read quality###
+
+
+
+cd ~/../mnt/c/users/'Wei Yuan'/Desktop/CA2/data
+
+#Download gzipped tar file of paired-end Illumina sequencing files from
+#https://mynbox.nus.edu.sg/userportal/#/shared/public/oD_2Npi_9jWyP_Yx/LSM3241-CA2
+#and shift the file into the directory /Desktop/CA2/data in file explorer
+
+#Viewing the read quality on html
+tar xzvf A0155266B.tgz                                      #unzip the tgz sequencing data file
+cd ..                                                       #change to CA2 directory
+mkdir -p results/fastqc
+fastqc data/*.fq -o results/fastqc #runs fastqc on the extracted fq files and outputs them into results/fastqc directory
+#now I can view the html files in results/fastqc directory using file explorer
+
+#Documenting a summary of the read quality
+cd results/fastqc
+
+for filename in *.zip; do                                   #unzips the zipped output files from fastqc from before
+ unzip $filename
+done
+ls -F A0155266B_1_fastqc/
+
+cd ../.. #change directory to Desktop/CA2
+mkdir -p docs
+cat results/fastqc/*/summary.txt > docs/fastq_summaries.txt #getting the summary of all the samples in one text document
+grep FAIL docs/fastq_summaries.txt                          #checking for any samples that failed the fastqc quality test; there are none
+
+
+
+
+          ###Trimming reads using Trimmomatic###
+
+
+
+TrimmomaticPE                                               #trimmomatic for paired end sequences like my samples
+cd ..                                                       #go to Desktop/CA2
+
+mkdir -p results/trimmed
+mkdir -p results/orphaned
+
+TrimmomaticPE data/A0155266B_1.fq data/A0155266B_2.fq \
+                results/trimmed/A0155266B_1.trim.fq results/orphaned/A0155266B_1.un.trim.fq \
+                results/trimmed/A0155266B_2.trim.fq results/orphaned/A0155266B_2.un.trim.fq \
+                SLIDINGWINDOW:4:20 MINLEN:25
+
+#no input for adaptor sequences because from read quality html we see no adaptors in our sequences
+#From read quality encoding, under 'Encoding', I know that Illumina 1.9 was used. Hence, Phred-33 is used to calculate
+#quality score (default setting).
+#PHRED score below 20 is reasonable (minimum of 99% chance of correct base call)
+#Thus, sliding window of 4 bases to remove quality score of less than 20 is also reasonable.
+
+#Output from TrimmomaticPE
+#Input Read Pairs: 1208130 Both Surviving: 1182958 (97.92%)
+#Forward Only Surviving: 18028 (1.49%) Reverse Only Surviving: 7023 (0.58%) Dropped: 121 (0.01%)
+
+#Checking if trimmomatic is ran correctly
+ls data -l -h
+ls results/trimmed -l -h
+ls results/orphaned -l -h
+#check (1) two trimmed and untrimmed files as specified in the TrimmomaticPE function is present and
+#(2) if file size of raw data is larger than trimmed and orphaned files; all looks good
+
+#Viewing fastqc report for sequences after trimming; checking if the kmers problem is solved!
+mkdir -p results/trimmed/fastqc
+fastqc  results/trimmed/*.fq  -o results/trimmed/fastqc/
+#Using file explorer, visit the html file in results/trimmed/fastqc/
+#Seems like kmer overrepresentation issue was resolved.
+#But Sequence Length Distribution was flagged; it turns out that most sequences were in the range of 96-100
+#This is not an issue because the Illumina technician was tasked to make paired end libraries of 100 bp in length!
+#Issue can be downplayed as "it is entirely normal to have different read lengths so warnings here can be ignored."
+#Source: https://www.bioinformatics.babraham.ac.uk/projects/fastqc/Help/3%20Analysis%20Modules/7%20Sequence%20Length%20Distribution.html
+
+
+
+
+          ###Alignment of the trimmed reads to ty5_6p###
+
+
+
+cd ..                                                       #change directory to Desktop/CA2; code varies depending on the directory I am currently in
+mkdir -p data/genome
+#move yeast genome file from IVLE (named sacCer3) AND transposon file from IVLE (named ty5_6p)
+#into data/genome using file explorer
+#since these files are already in FA format, there is no need to unzip
+
+bowtie2-build data/genome/ty5_6p.fa data/genome/ty5_6p
+export BOWTIE2_INDEXES=$(pwd)/data/genome
+mkdir -p results/sam/transposonONLY results/bam/transposonONLY
+bowtie2 -x ty5_6p --very-fast -p 4 -1 results/trimmed/A0155266B_1.trim.fq -2 results/trimmed/A0155266B_2.trim.fq -S results/sam/transposonONLY/forward.sam
+
+bowtie2-build data/genome/ty5_6p_reverse.fa data/genome/ty5_6p_reverse
+export BOWTIE2_INDEXES=$(pwd)/data/genome
+bowtie2 -x ty5_6p_reverse --very-fast -p 4 -1 results/trimmed/A0155266B_1.trim.fq -2 results/trimmed/A0155266B_2.trim.fq -S results/sam/transposonONLY/reverse.sam
+
+bowtie2-build data/genome/ty5_6p_complement.fa data/genome/ty5_6p_complement
+export BOWTIE2_INDEXES=$(pwd)/data/genome
+bowtie2 -x ty5_6p_complement --very-fast -p 4 -1 results/trimmed/A0155266B_1.trim.fq -2 results/trimmed/A0155266B_2.trim.fq -S results/sam/transposonONLY/complement.sam
+
+bowtie2-build data/genome/ty5_6p_reverse_complement.fa data/genome/ty5_6p_reverse_complement
+export BOWTIE2_INDEXES=$(pwd)/data/genome
+bowtie2 -x ty5_6p_reverse_complement --very-fast -p 4 -1 results/trimmed/A0155266B_1.trim.fq -2 results/trimmed/A0155266B_2.trim.fq -S results/sam/transposonONLY/reverse_complement.sam
+
+#Results: Only the forward read aligned, indicating the all inserts in the genome were in the forward orientation
+
+
+
+          ###Alignment of reads to reference genome###
+cat data/genome/*.fa > data/genome/genomeANDtransposon.fa   #adding transposon to genome, as if the transposon is an extra chromosome
+head data/genome/genomeANDtransposon.fa                     #seeing the top part of the FA file
+
+mkdir -p results/sam results/bam                            #making folders for sam and bam files separately
+
+bowtie2-build data/genome/genomeANDtransposon.fa data/genome/genomeANDtransposon #building an index of the yeast genome; only need to do this once and can be reused
+
+export BOWTIE2_INDEXES=$(pwd)/data/genome
+
+#aligning the reads to the indexed yeast genome
+bowtie2 -x genomeANDtransposon --very-fast -p 4 -1 results/trimmed/A0155266B_1.trim.fq -2 results/trimmed/A0155266B_2.trim.fq -S results/sam/aligned_reads.sam
+
+#Results for reference:
+#1182958 reads; of these:
+#  1182958 (100.00%) were paired; of these:
+#    959 (0.08%) aligned concordantly 0 times
+#    1103804 (93.31%) aligned concordantly exactly 1 time
+#    78195 (6.61%) aligned concordantly >1 times
+#    ----
+#    959 pairs aligned concordantly 0 times; of these:
+#      2 (0.21%) aligned discordantly 1 time
+#    ----
+#    957 pairs aligned 0 times concordantly or discordantly; of these:
+#      1914 mates make up the pairs; of these:
+#        1555 (81.24%) aligned 0 times
+#        65 (3.40%) aligned exactly 1 time
+#        294 (15.36%) aligned >1 times
+#99.93% overall alignment rate
+
+#Convert SAM to BAM format for reads aligned to genome; also sort and index the BAM file for viewing in IGV
+samtools view -S -b results/sam/aligned_reads.sam > results/bam/aligned_reads.bam
+samtools sort results/bam/aligned_reads.bam -o results/bam/aligned-sorted.bam
+samtools index results/bam/aligned-sorted.bam
+
+
+
+                    ###Viewing alignment in IGV###
+
+
+
+#Download IGV from https://www.broadinstitute.org/software/igv/download and install
+#Load reference genome of genome/genomeANDtransposon.fa in IGV by clicking "Load Genomes from File"
+#Load BAM file of results/bam/aligned-sorted.bam using "Load from file"
+#To use: Click on chromosome of interest and zoom in to see aligned reads
+
+#Results: There are instances where one of the mate pair mapped to the edges of the transposon and the
+#other mate is mapped to the yeast chromosome. Below is a list of such cases:
+
+#At 5' end of transposon appended to genome (read names, mate is first/second in pair, mapped to?)
+
+#chrIII:5362, second in pair, chrIII:11371 (+)
+#chrIII:35314, first in pair, chrIII:11457 (+)
+#chrIII:19264, first in pair,  chrIII:11546 (-)
+#chrIII:36572, second, chrIII:11364 (+)
+#chrIII:41178, second, chrIII:11454 (+)
+#chrIII:36196, second, chrIII:11531 (-)
+#chrIII:34870, second, chrIII:11429 (+)
+#chrIII:39950, first, chrIII:11447 (+)
+
+#chrIII:4868, second, chrIII:198695 (-)
+#chrIII:39848, first, chrIII:198742 (-)
+#chrIII:3784, first, chrIII:198697 (-)
+#chrIII:10576, second in pair, chrIII:198723 (-)
+
+#chrIV:47820, first, chrIV: 1331678 (+)
+#chrIV:29824, first, chrIV:1331824 (-)
+#chrIV:165036, second, chrIV:1331783 (-)
+#chrIV:234274, first, chrIV: 1331777 (-)
+
+#chrIII:13738, second, None
+#chrIII:8260, first, None
+#chrIII:38070, second, None
+#chrIII:23134, second, None
+
+#chrIV:169538, second, None
+#chrIV:99678, first, None
+#chrIV:267422, second, None
+#chrIV:73896, second, None
+
+# 3' end of transposon appended to genome (read names, mate is first/second in pair, mapped to?)
+
+#chrIII:60772, second, chrIII:11326 (+)
+#chrIII:8914, first, chrIII:11324 (+)
+#chrIII:10452, second, chrIII:11623 (-)
+#chrIII:64214, second, chrIII:11648 (-)
+#chrIII:42982, second, chrIII:11677 (-)
+#chrIII:13204, first, chrIII:116322 (-)
+#chrIII:46128, second, chrIII:11435 (+)
+#chrIII:48052, first, chrIII:11571 (-)
+#chrIII:3988, second, chrIII:11524 (-)
+#chrIII:8906, second, chrIII:11554 (-)
+#chrIII:42230, first, chrIII:11390 (+)
+#chrIII:14684, second, chrIII:11432 (+)
+#chrIII:14684, second, chrIII:11432(-)
+#chrIII:54148, first, chrIII:11448 (+)
+#chrIII:20254, first, chrIII:11328 (+)
+
+#chrIII:42556, second, chrIII:198815 (-)
+
+#chrIV:83384, first, chrIV:1331774 (-)
+#chrIV:170608, second, chrIV:1331607 (+)
+#chrIV:275892, second, chrIV:1331650 (+)
+
+#chrIII:46270, first, None
+#chrIII:23026, first, None
+#chrIII:26618, first, None
+
+#chrIV:257682, second, None
+#chrIV:269026, second, None
+#chrIV:269026, second, None
+
+
+#With these results, I can tell only chrIII has 2 transposons whereas chrIV has 1.
+#Also, I narrow down the ranges in which the transposon may have inserted into the genome by viewing in IGV (details in report).
+#I wrote a python script to insert the transposon, in forward direction, into the genome at each
+#of the suspected positions. The script is provided below with the example for insertion into chromosome IV.
+
+
+
+###Simulating transposon inserts into consecutive positions in the genome (chrIV)###
+
+
+
+
+#Extracting target chromosomes from fa file with all chromosomes in ubuntu
+#1. Download and shift the fasta file into same directory as this script
+#2. Extract target chromosome(s) using samtools in Ubuntu
+sudo apt-get install samtools
+wget https://github.com/samtools/samtools/releases/download/1.9/samtools-1.9.tar.bz2
+tar -vxjf samtools-1.9.tar.bz2
+cd samtools-1.9
+make
+sudo make install
+cd ~/../mnt/c/users/'Wei Yuan'/Desktop/CA2/biopython
+samtools faidx sacCer3.fa
+samtools faidx sacCer3.fa chrIII -o chrIII.fa               #isolate the chrIII sequence from the yeast genome
+samtools faidx sacCer3.fa chrIV -o chrIV.fa                 #isolate the chrIV sequence from the yeast genome
+
+#Installing biopython
+#open powershell in windows and type in the following to install biopython:
+pip install biopython
+
+#Codes for simulated insertion using python
+from Bio import SeqIO
+
+#Adjustable parameters for the code
+insert_start = 1331742                                      #means add insert at position after n
+                                                            #E.g. if insert_start = 3, the insert goes into AAA|AAA
+insert_last = 1331783                                       #means last insert at position after n
+                                                            #E.g. if insert_start = 5, the insert goes into AAAAA|A
+record = SeqIO.read("chrIV.fa", "fasta")                    #the genome my insert goes into
+
+record_transp = SeqIO.read("ty5_6p.fa", "fasta")            #transposon used is reverse complement of the original file
+
+#Code iteratively add transposon sequence to consequtive positions in the chromosome
+record_copy = record[:]
+for pos in range(insert_start, insert_last+1):
+    record_copy.seq = record_copy.seq[0: pos] + record_transp.seq + record_copy.seq[pos:]
+    SeqIO.write(record_copy, str(record_copy.id) + " insertion at POS " + str(pos) + ".fasta", "fasta")
+    record_copy = record[:]
+    print("insertion at position " + str(pos) + " is done")
+
+
+#With the files containing the simulated insertions, I will align the trimmed reads to the chromosomes with simulated inserts.
+
+cd ..                                                       #change directory to users/Wei Yuan/Desktop/CA2
+mkdir -p data/genome/simulated_insertions/chrIV
+#Shift all the chrIV files generated by python to chrIV directory
+mkdir -p results/sam/simulated_insertions/chrIV results/bam/simulated_insertions/chrIV #making folders for genome alignment
+
+
+
+          ###Aligning reads to a control chromosome IV without insertion###
+
+
+
+bowtie2-build biopython/chrIV.fa biopython/chrIV
+export BOWTIE2_INDEXES=$(pwd)/biopython
+bowtie2 -x chrIV --very-fast -p 4 -1 results/trimmed/A0155266B_1.trim.fq -2 results/trimmed/A0155266B_2.trim.fq -S results/sam/simulated_insertions/chrIV/chrIV_aligned_reads.sam
+
+#Results of alignment of reads to control chromosome IV (no insert)
+#1182958 reads; of these:
+#  1182958 (100.00%) were paired; of these:
+#    999714 (84.51%) aligned concordantly 0 times
+#    157263 (13.29%) aligned concordantly exactly 1 time
+#    25981 (2.20%) aligned concordantly >1 times
+#    ----
+#    999714 pairs aligned concordantly 0 times; of these:
+#      181 (0.02%) aligned discordantly 1 time
+#    ----
+#    999533 pairs aligned 0 times concordantly or discordantly; of these:
+#      1999066 mates make up the pairs; of these:
+#        1991309 (99.61%) aligned 0 times
+#        3812 (0.19%) aligned exactly 1 time
+#        3945 (0.20%) aligned >1 times
+#15.83% overall alignment rate
+
+#If the reads were aligned to the chromosome with transposon, the overall alignment rate should be higher than 15.83%.
+
+
+
+
+          ###Aligning reads to all chromosomes with simulated insertions###
+
+
+
+#Loop to index all simulated chromosome sequences in chrIV directory
+for file in ls data/genome/simulated_insertions/chrIV/*chrIV.fasta;
+do
+    SRR=$(basename $file .fasta)
+    bowtie2-build data/genome/simulated_insertions/chrIV/${SRR}.fasta data/genome/simulated_insertions/chrIV/${SRR}
+done
+
+export BOWTIE2_INDEXES=$(pwd)/data/genome/simulated_insertions/chrIV
+
+#Loop to align trimmed reads to the simulated chromosome, one chromosome at a time
+for file in ls data/genome/simulated_insertions/chrIV/*chrIV.fasta;
+do
+    SRR=$(basename $file .fasta)
+    echo running $SRR
+    bowtie2 -x ${SRR} --very-fast -p 4 -1 results/trimmed/A0155266B_1.trim.fq -2 results/trimmed/A0155266B_2.trim.fq -S results/sam/simulated_insertions/chrIV/${SRR}_aligned_reads.sam
+done
+
+#Preparing the files necessary for IGV
+samtools view -S -b results/sam/simulated_insertions/chrIV/_insertion_at_position_1331764_chrIV_aligned_reads.sam > results/bam/simulated_insertions/chrIV/_insertion_at_position_1331764_chrIV_aligned_reads.bam
+samtools sort results/bam/simulated_insertions/chrIV/_insertion_at_position_1331764_chrIV_aligned_reads.bam -o results/bam/simulated_insertions/chrIV/_insertion_at_position_1331764_chrIV_aligned_reads_sorted.bam
+samtools index results/bam/simulated_insertions/chrIV/_insertion_at_position_1331764_chrIV_aligned_reads_sorted.bam
+
+samtools view -S -b results/sam/simulated_insertions/chrIV/_insertion_at_position_1331781_chrIV_aligned_reads.sam > results/bam/simulated_insertions/chrIV/_insertion_at_position_1331781_chrIV_aligned_reads.bam
+samtools sort results/bam/simulated_insertions/chrIV/_insertion_at_position_1331781_chrIV_aligned_reads.bam -o results/bam/simulated_insertions/chrIV/_insertion_at_position_1331781_chrIV_aligned_reads_sorted.bam
+samtools index results/bam/simulated_insertions/chrIV/_insertion_at_position_1331781_chrIV_aligned_reads_sorted.bam
+
+#Results: The file '_insertion_at_position_1331781_chrIV' has the transposon inserted at the right position and orientation; i.e. the insert is in position 1331781 in chrIV in forward direction.
+
+
+
+         ###Simulating transposon inserts into consecutive positions in the genome (chrIII)###
+
+
+
+from Bio import SeqIO
+#Adjustable parameters for the code
+insert_start = 11529                                        #means add insert at position after n
+                                                            #E.g. if insert_start = 3, the insert goes into AAA|AAA
+insert_last = 11554                                         #means last insert at position after n
+                                                            #E.g. if insert_start = 5, the insert goes into AAAAA|A
+record = SeqIO.read("chrIII.fa", "fasta")                   #the genome my insert goes into
+
+record_transp = SeqIO.read("ty5_6p.fa", "fasta")   #transposon used (change according to forward or reverse direction of insert)
+
+#Code iteratively add transposon sequence to consequtive positions in the chromosome
+record_copy = record[:]
+for pos in range(insert_start, insert_last+1):
+    record_copy.seq = record_copy.seq[0: pos] + record_transp.seq + record_copy.seq[pos:]
+    SeqIO.write(record_copy, str(record_copy.id) + " insertion at POS " + str(pos) + ".fasta", "fasta")
+    record_copy = record[:]
+    print("insertion at position " + str(pos) + " is done")
+
+
+#With the files containing the simulated insertions, I will align the trimmed reads to the chromosomes with simulated inserts.
+
+
+cd ..                                                       #change directory to users/Wei Yuan/Desktop/CA2
+mkdir -p data/genome/simulated_insertions/chrIII
+#Shift all the chrIII files generated by python to chrIII directory
+mkdir -p results/sam/simulated_insertions/chrIII results/bam/simulated_insertions/chrIII #making folders for sam and bam files
+
+
+
+          ###Aligning reads to a control chromosome III without insertion###
+
+
+
+bowtie2-build biopython/chrIII.fa biopython/chrIII
+export BOWTIE2_INDEXES=$(pwd)/biopython
+bowtie2 -x chrIII --very-fast -p 4 -1 results/trimmed/A0155266B_1.trim.fq -2 results/trimmed/A0155266B_2.trim.fq -S results/sam/simulated_insertions/chrIII/chrIII_aligned_reads.sam
+
+#Results
+#1182958 (100.00%) were paired; of these:
+#  1141381 (96.49%) aligned concordantly 0 times
+#  40213 (3.40%) aligned concordantly exactly 1 time
+#  1364 (0.12%) aligned concordantly >1 times
+#  ----
+#  1141381 pairs aligned concordantly 0 times; of these:
+#    226 (0.02%) aligned discordantly 1 time
+#  ----
+#  1141155 pairs aligned 0 times concordantly or discordantly; of these:
+#    2282310 mates make up the pairs; of these:
+#      2275296 (99.69%) aligned 0 times
+#      3334 (0.15%) aligned exactly 1 time
+#      3680 (0.16%) aligned >1 times
+#3.83% overall alignment rate
+
+#If the chromosome with transposon insert was aligned with trimmed reads, the overall alignment rate should be more than 3.83%
+
+
+
+          ###Aligning reads to all chromosomes with simulated insertions###
+
+
+
+#Loop to index all simulated chromosome sequences in chrIII directory
+for file in ls data/genome/simulated_insertions/chrIII/*chrIII.fasta;
+do
+    SRR=$(basename $file .fasta)
+    bowtie2-build data/genome/simulated_insertions/chrIII/${SRR}.fasta data/genome/simulated_insertions/chrIII/${SRR}
+done
+
+export BOWTIE2_INDEXES=$(pwd)/data/genome/simulated_insertions/chrIII#aligning the reads to the simulated chromosome
+
+#Loop to align trimmed reads to the simulated chromosome, one chromosome at a time
+for file in ls data/genome/simulated_insertions/chrIII/*chrIII.fasta;
+do
+    SRR=$(basename $file .fasta)
+    echo running $SRR
+    bowtie2 -x ${SRR} --very-fast -p 4 -1 results/trimmed/A0155266B_1.trim.fq -2 results/trimmed/A0155266B_2.trim.fq -S results/sam/simulated_insertions/chrIII/${SRR}_aligned_reads.sam
+done
+
+#Results
+#Insertions at 11552 and 11553 had the highest number of reads aligned exactly 1 time
+#I can view the insertion using IGV and the chromosome with the least number of mismatches should be the one with the
+#insertion at the correct position
+
+#Preparing the files necessary for IGV
+samtools view -S -b results/sam/simulated_insertions/chrIII/_insertion_at_position_11552_chrIII_aligned_reads.sam > results/bam/simulated_insertions/chrIII/_insertion_at_position_11552_chrIII_aligned_reads.bam
+samtools sort results/bam/simulated_insertions/chrIII/_insertion_at_position_11552_chrIII_aligned_reads.bam -o results/bam/simulated_insertions/chrIII/_insertion_at_position_11552_chrIII_aligned_reads_sorted.bam
+samtools index results/bam/simulated_insertions/chrIII/_insertion_at_position_11552_chrIII_aligned_reads_sorted.bam
+
+samtools view -S -b results/sam/simulated_insertions/chrIII/_insertion_at_position_11553_chrIII_aligned_reads.sam > results/bam/simulated_insertions/chrIII/_insertion_at_position_11553_chrIII_aligned_reads.bam
+samtools sort results/bam/simulated_insertions/chrIII/_insertion_at_position_11553_chrIII_aligned_reads.bam -o results/bam/simulated_insertions/chrIII/_insertion_at_position_11553_chrIII_aligned_reads_sorted.bam
+samtools index results/bam/simulated_insertions/chrIII/_insertion_at_position_11553_chrIII_aligned_reads_sorted.bam
+
+samtools view -S -b results/sam/simulated_insertions/chrIII/_insertion_at_position_11537_chrIII_aligned_reads.sam > results/bam/simulated_insertions/chrIII/_insertion_at_position_11537_chrIII_aligned_reads.bam
+samtools sort results/bam/simulated_insertions/chrIII/_insertion_at_position_11537_chrIII_aligned_reads.bam -o results/bam/simulated_insertions/chrIII/_insertion_at_position_11537_chrIII_aligned_reads_sorted.bam
+samtools index results/bam/simulated_insertions/chrIII/_insertion_at_position_11537_chrIII_aligned_reads_sorted.bam
+
+samtools view -S -b results/sam/simulated_insertions/chrIII/_insertion_at_position_11536_chrIII_aligned_reads.sam > results/bam/simulated_insertions/chrIII/_insertion_at_position_11536_chrIII_aligned_reads.bam
+samtools sort results/bam/simulated_insertions/chrIII/_insertion_at_position_11536_chrIII_aligned_reads.bam -o results/bam/simulated_insertions/chrIII/_insertion_at_position_11536_chrIII_aligned_reads_sorted.bam
+samtools index results/bam/simulated_insertions/chrIII/_insertion_at_position_11536_chrIII_aligned_reads_sorted.bam
+
+samtools view -S -b results/sam/simulated_insertions/chrIII/_insertion_at_position_11538_chrIII_aligned_reads.sam > results/bam/simulated_insertions/chrIII/_insertion_at_position_11538_chrIII_aligned_reads.bam
+samtools sort results/bam/simulated_insertions/chrIII/_insertion_at_position_11538_chrIII_aligned_reads.bam -o results/bam/simulated_insertions/chrIII/_insertion_at_position_11538_chrIII_aligned_reads_sorted.bam
+samtools index results/bam/simulated_insertions/chrIII/_insertion_at_position_11538_chrIII_aligned_reads_sorted.bam
+
+#Results: The file 'insertion_at_position_11537' has the transposon inserted at the right position and orientation; i.e. the insert is in position 11537 in chrIII in forward direction.
